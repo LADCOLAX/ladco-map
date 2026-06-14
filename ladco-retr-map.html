@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LADCO Property Transfer Map — La Crosse County</title>
+
+  <!-- ============================================================
+    SECTION 1: KEYS — fill these in before publishing
+  ============================================================ -->
+  <script>
+    const GOOGLE_MAPS_API_KEY = "YOUR_GOOGLE_MAPS_API_KEY";
+    const SHEET_CSV_URL       = "YOUR_PUBLISHED_GOOGLE_SHEET_CSV_URL";
+    const GIS_PARCEL_URL      = "https://lacrossecounty.maps.arcgis.com/apps/webappviewer/index.html?find=";
+  </script>
+
+  <!-- ============================================================
+    SECTION 2: TIER CONFIGURATION
+    ─────────────────────────────────────────────────────────────
+    This is the only block you need to edit when you introduce
+    paid tiers. Set CURRENT_TIER to match the logged-in user's
+    plan, then flip feature flags per tier below.
+
+    Today everything is FREE — all flags are true.
+    When you add auth, replace CURRENT_TIER with a value that
+    comes from your membership platform (e.g. window.userTier).
+  ============================================================ -->
+  <script>
+    // ── Active tier for this session ──────────────────────────
+    // Values: 'free' | 'professional' | 'analyst' | 'institutional'
+    // When you add a login system, set this from your auth token:
+    //   const CURRENT_TIER = window.membershipTier || 'free';
+    const CURRENT_TIER = 'free';
+
+    // ── Feature flags by tier ─────────────────────────────────
+    // To gate a feature: set it to false on 'free', true on paid tiers.
+    // Every feature is true for all tiers right now.
+    const TIER_CONFIG = {
+      free: {
+        // Map & filters
+        showMap:               true,
+        showAllFilters:        true,   // future: limit free to fewer filters
+        showDateRangeFilter:   true,
+        showPriceFilter:       true,
+        showUnitsFilter:       true,
+        showArmsLengthToggle:  true,
+        showExportBtn:         true,   // future: gate behind Professional
+
+        // Data visible in popups and sidebar
+        showGrantorGrantee:    true,   // future: gate behind Professional
+        showParcelLink:        true,   // future: gate behind Professional
+        showFinancing:         true,   // future: gate behind Analyst
+        showEstimatedValue:    true,
+        showLegalDesc:         false,  // never shown publicly (too much text)
+
+        // Sidebar tabs
+        showBreakdownTab:      true,   // future: gate behind Analyst
+        showTrendCharts:       false,  // not built yet — Analyst tier feature
+        showBuyerSellerReport: false,  // not built yet — Analyst tier feature
+
+        // Data depth
+        dataWindowMonths:      0,      // 0 = all history; future: set 12 for free tier
+        showUpgradePrompts:    false,  // flip to true when paid tiers go live
+      },
+
+      professional: {
+        showMap:               true,
+        showAllFilters:        true,
+        showDateRangeFilter:   true,
+        showPriceFilter:       true,
+        showUnitsFilter:       true,
+        showArmsLengthToggle:  true,
+        showExportBtn:         true,
+        showGrantorGrantee:    true,
+        showParcelLink:        true,
+        showFinancing:         true,
+        showEstimatedValue:    true,
+        showLegalDesc:         false,
+        showBreakdownTab:      true,
+        showTrendCharts:       false,
+        showBuyerSellerReport: false,
+        dataWindowMonths:      0,
+        showUpgradePrompts:    false,
+      },
+
+      analyst: {
+        showMap:               true,
+        showAllFilters:        true,
+        showDateRangeFilter:   true,
+        showPriceFilter:       true,
+        showUnitsFilter:       true,
+        showArmsLengthToggle:  true,
+        showExportBtn:         true,
+        showGrantorGrantee:    true,
+        showParcelLink:        true,
+        showFinancing:         true,
+        showEstimatedValue:    true,
+        showLegalDesc:         false,
+        showBreakdownTab:      true,
+        showTrendCharts:       true,
+        showBuyerSellerReport: true,
+        dataWindowMonths:      0,
+        showUpgradePrompts:    false,
+      },
+
+      institutional: {
+        showMap:               true,
+        showAllFilters:        true,
+        showDateRangeFilter:   true,
+        showPriceFilter:       true,
+        showUnitsFilter:       true,
+        showArmsLengthToggle:  true,
+        showExportBtn:         true,
+        showGrantorGrantee:    true,
+        showParcelLink:        true,
+        showFinancing:         true,
+        showEstimatedValue:    true,
+        showLegalDesc:         true,
+        showBreakdownTab:      true,
+        showTrendCharts:       true,
+        showBuyerSellerReport: true,
+        dataWindowMonths:      0,
+        showUpgradePrompts:    false,
+      },
+    };
+
+    // Resolved config for this session — use FEATURES.flagName throughout the code
+    const FEATURES = TIER_CONFIG[CURRENT_TIER] || TIER_CONFIG['free'];
+
+    // ── Upgrade prompt helper ─────────────────────────────────
+    // When showUpgradePrompts is true, call this instead of showing gated content.
+    // Replace the body with your real upgrade/signup URL when ready.
+    function upgradePrompt(featureName, targetTier) {
+      if (!FEATURES.showUpgradePrompts) return '';
+      return `<div class="upgrade-nudge">
+        <span>🔒 ${featureName} is available on the <strong>${targetTier}</strong> plan.</span>
+        <a href="/upgrade" class="upgrade-link">Learn more</a>
+      </div>`;
+    }
+
+    // ── Analytics hook ────────────────────────────────────────
+    // Drop your analytics calls here. Called on filter changes,
+    // popup opens, exports, and tab switches. Replace console.log
+    // with your real analytics platform (GA4, Plausible, etc.)
+    function trackEvent(eventName, properties) {
+      // Example GA4: gtag('event', eventName, properties);
+      // Example Plausible: plausible(eventName, { props: properties });
+      console.log('[LADCO analytics]', eventName, properties);
+    }
+  </script>
+  <!-- ============================================================ -->
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f5f2; color: #1a1a1a; font-size: 14px; }
+
+    /* ── Header ── */
+    #header { background: #1a3a2a; color: #fff; padding: 12px 18px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .logo { width: 36px; height: 36px; border-radius: 6px; background: #2d6a4a; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; flex-shrink: 0; }
+    #header h1 { font-size: 16px; font-weight: 600; }
+    #header p  { font-size: 11px; opacity: 0.65; margin-top: 1px; }
+    #header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+    #last-updated { font-size: 11px; opacity: 0.5; }
+    #tier-badge { font-size: 10px; padding: 3px 8px; border-radius: 9px; background: rgba(255,255,255,0.15); color: rgba(255,255,255,0.85); text-transform: uppercase; letter-spacing: 0.5px; }
+    #export-btn { font-size: 12px; padding: 5px 11px; border-radius: 5px; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.25); color: #fff; cursor: pointer; }
+    #export-btn:hover { background: rgba(255,255,255,0.2); }
+    #export-btn:disabled { opacity: 0.4; cursor: default; }
+
+    /* ── Stats bar ── */
+    #stats-bar { background: #fff; border-bottom: 1px solid #e2e6de; padding: 8px 18px; display: flex; gap: 0; align-items: stretch; flex-wrap: wrap; }
+    .stat { display: flex; flex-direction: column; justify-content: center; padding: 0 20px 0 0; margin-right: 20px; border-right: 1px solid #e2e6de; }
+    .stat:last-child { border-right: none; }
+    .stat-val { font-size: 20px; font-weight: 600; color: #1a3a2a; line-height: 1.1; }
+    .stat-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: #7a8a7a; margin-top: 2px; }
+
+    /* ── Filter bar ── */
+    #filter-bar { background: #fff; border-bottom: 1px solid #e2e6de; padding: 8px 18px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .filter-group { display: flex; align-items: center; gap: 5px; }
+    .filter-lbl { font-size: 11px; color: #7a8a7a; white-space: nowrap; }
+    #filter-bar select, #filter-bar input[type="text"], #filter-bar input[type="search"] { font-size: 12px; padding: 5px 8px; height: 30px; border: 1px solid #cdd4c9; border-radius: 5px; background: #fafbf9; color: #1a1a1a; outline: none; }
+    #filter-bar select:focus, #filter-bar input:focus { border-color: #2d6a4a; box-shadow: 0 0 0 2px rgba(45,106,74,0.12); }
+    #f-year-from, #f-year-to { width: 68px; }
+    #f-price-min, #f-price-max { width: 90px; }
+    #f-municipality { min-width: 145px; }
+    #f-doc-type, #f-conveyance { min-width: 155px; }
+    #f-prop-type { min-width: 170px; }
+    #f-units-min, #f-units-max { width: 55px; }
+    #search-input { width: 180px; }
+    .toggle-group { display: flex; align-items: center; gap: 6px; padding: 0 6px; }
+    .toggle-label { font-size: 11px; color: #1a1a1a; white-space: nowrap; }
+    .toggle { position: relative; width: 32px; height: 18px; }
+    .toggle input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider { position: absolute; inset: 0; background: #cdd4c9; border-radius: 10px; cursor: pointer; transition: background 0.2s; }
+    .toggle-slider::before { content: ''; position: absolute; width: 13px; height: 13px; border-radius: 50%; background: #fff; top: 2.5px; left: 2.5px; transition: transform 0.2s; }
+    .toggle input:checked + .toggle-slider { background: #2d6a4a; }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(14px); }
+    #reset-btn { font-size: 12px; padding: 5px 11px; height: 30px; background: transparent; border: 1px solid #cdd4c9; border-radius: 5px; color: #7a8a7a; cursor: pointer; white-space: nowrap; }
+    #reset-btn:hover { background: #f0f3ee; }
+    #result-count { margin-left: auto; font-size: 11px; color: #7a8a7a; white-space: nowrap; }
+
+    /* ── Locked filter state ── */
+    .filter-locked { position: relative; }
+    .filter-locked select, .filter-locked input { opacity: 0.45; pointer-events: none; }
+    .lock-icon { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); font-size: 11px; color: #aaa; pointer-events: none; }
+
+    /* ── Main layout ── */
+    #main { display: flex; height: calc(100vh - 148px); min-height: 420px; }
+    #map { flex: 1; }
+
+    /* ── Sidebar ── */
+    #sidebar { width: 310px; background: #fff; border-left: 1px solid #e2e6de; display: flex; flex-direction: column; overflow: hidden; }
+    #sidebar-tabs { display: flex; border-bottom: 1px solid #e2e6de; }
+    .stab { flex: 1; padding: 8px 0; text-align: center; font-size: 12px; font-weight: 500; color: #7a8a7a; cursor: pointer; border-bottom: 2px solid transparent; position: relative; }
+    .stab.active { color: #1a3a2a; border-bottom-color: #2d6a4a; }
+    .stab.locked-tab { color: #bbb; cursor: default; }
+    .stab .tab-lock { font-size: 10px; margin-left: 3px; }
+    #sidebar-content { overflow-y: auto; flex: 1; }
+
+    /* Transfer cards */
+    .t-card { padding: 10px 13px; border-bottom: 1px solid #f0f2ee; cursor: pointer; transition: background 0.1s; }
+    .t-card:hover { background: #f5f8f4; }
+    .t-card.active { background: #edf5f0; border-left: 3px solid #2d6a4a; }
+    .t-card-addr { font-size: 12px; font-weight: 500; color: #1a1a1a; line-height: 1.3; }
+    .t-card-sub  { font-size: 11px; color: #7a8a7a; margin-top: 2px; }
+    .t-card-row  { display: flex; justify-content: space-between; align-items: center; margin-top: 5px; }
+    .t-card-price { font-size: 12px; font-weight: 600; color: #1a3a2a; }
+    .badge { font-size: 10px; padding: 2px 6px; border-radius: 9px; font-weight: 500; white-space: nowrap; }
+
+    /* Redacted / upgrade nudge */
+    .redacted { display: inline-block; background: #e8ede5; color: transparent; border-radius: 3px; user-select: none; min-width: 80px; height: 13px; vertical-align: middle; }
+    .upgrade-nudge { background: #f5f8f4; border: 1px solid #d0dbc8; border-radius: 6px; padding: 8px 10px; font-size: 11px; color: #3a5a3a; margin: 8px 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .upgrade-link { color: #2d6a4a; font-weight: 600; text-decoration: none; white-space: nowrap; }
+    .upgrade-link:hover { text-decoration: underline; }
+
+    /* Stats breakdown tab */
+    #stats-tab-content { padding: 14px; }
+    .mini-stat { margin-bottom: 14px; }
+    .mini-stat-label { font-size: 11px; color: #7a8a7a; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; }
+    .bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .bar-name { font-size: 11px; color: #1a1a1a; width: 110px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bar-track { flex: 1; height: 6px; background: #eaede8; border-radius: 3px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 3px; background: #2d6a4a; transition: width 0.3s; }
+    .bar-val { font-size: 10px; color: #7a8a7a; width: 28px; text-align: right; flex-shrink: 0; }
+
+    /* ── Info popup ── */
+    .gm-popup { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px; max-width: 300px; line-height: 1.5; }
+    .gm-popup h3 { font-size: 13px; font-weight: 600; color: #1a3a2a; margin-bottom: 8px; line-height: 1.3; }
+    .gm-popup .popup-grid { display: grid; grid-template-columns: 90px 1fr; gap: 3px 8px; }
+    .gm-popup .lbl { color: #7a8a7a; font-size: 11px; padding: 1px 0; }
+    .gm-popup .val { color: #1a1a1a; font-size: 11px; padding: 1px 0; }
+    .gm-popup .price { font-size: 15px; font-weight: 600; color: #1a3a2a; }
+    .gm-popup a { color: #2d6a4a; text-decoration: none; }
+    .gm-popup a:hover { text-decoration: underline; }
+    .gm-popup .divider { border: none; border-top: 1px solid #e8ede5; margin: 8px 0; }
+    .gm-popup .party-block { margin-top: 6px; }
+    .gm-popup .party-lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: #9aa89a; }
+    .gm-popup .party-val { font-size: 11px; color: #1a1a1a; }
+    .gm-popup .popup-upgrade { font-size: 10px; color: #7a8a7a; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e8ede5; }
+    .gm-popup .popup-upgrade a { color: #2d6a4a; font-weight: 600; }
+
+    /* ── Legend ── */
+    #legend { position: absolute; top: 12px; left: 12px; background: #fff; border: 1px solid #dde4da; border-radius: 8px; padding: 10px 12px; font-size: 11px; z-index: 5; box-shadow: 0 1px 4px rgba(0,0,0,0.1); max-width: 190px; }
+    #legend h4 { font-size: 10px; font-weight: 600; color: #1a3a2a; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.4px; }
+    .leg-item { display: flex; align-items: center; gap: 7px; margin: 3px 0; color: #3a3a3a; }
+    .leg-dot { width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; border: 1.5px solid rgba(0,0,0,0.12); }
+    .leg-size-note { font-size: 10px; color: #9aa89a; margin-top: 6px; padding-top: 6px; border-top: 1px solid #eaede8; line-height: 1.4; }
+
+    /* ── Loading / error ── */
+    #loading-overlay { position: fixed; inset: 0; background: rgba(244,245,242,0.93); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 9999; gap: 12px; }
+    #loading-overlay.hidden { display: none; }
+    .spinner { width: 34px; height: 34px; border: 3px solid #d0d8ce; border-top-color: #2d6a4a; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading-msg { font-size: 13px; color: #555; }
+    #error-bar { display: none; background: #fff5f5; border-bottom: 1px solid #f5c0c0; color: #8b2020; padding: 8px 18px; font-size: 12px; }
+
+    /* ── Mobile ── */
+    @media (max-width: 680px) {
+      #main { flex-direction: column; height: auto; }
+      #sidebar { width: 100%; max-height: 280px; border-left: none; border-top: 1px solid #e2e6de; }
+      #map { height: 48vh; }
+      #filter-bar { overflow-x: auto; flex-wrap: nowrap; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <p id="loading-msg">Loading transfer records…</p>
+</div>
+<div id="error-bar"></div>
+
+<div id="header">
+  <div class="logo">LC</div>
+  <div>
+    <h1>La Crosse County Property Transfer Map</h1>
+    <p>LADCO — Real Estate Transfer Return records, La Crosse County Register of Deeds</p>
+  </div>
+  <div id="header-right">
+    <span id="last-updated"></span>
+    <span id="tier-badge"></span>
+    <button id="export-btn">↓ Export CSV</button>
+  </div>
+</div>
+
+<div id="stats-bar">
+  <div class="stat"><span class="stat-val" id="s-total">—</span><span class="stat-lbl">Total transfers</span></div>
+  <div class="stat"><span class="stat-val" id="s-showing">—</span><span class="stat-lbl">Showing</span></div>
+  <div class="stat"><span class="stat-val" id="s-sales">—</span><span class="stat-lbl">Arm's-length sales</span></div>
+  <div class="stat"><span class="stat-val" id="s-volume">—</span><span class="stat-lbl">Sales volume</span></div>
+  <div class="stat"><span class="stat-val" id="s-median">—</span><span class="stat-lbl">Median sale price</span></div>
+</div>
+
+<div id="filter-bar">
+  <div class="filter-group" id="fg-date">
+    <span class="filter-lbl">Recorded</span>
+    <input type="text" id="f-year-from" placeholder="From" />
+    <span style="font-size:11px;color:#aaa">–</span>
+    <input type="text" id="f-year-to" placeholder="To" />
+  </div>
+  <div class="filter-group">
+    <span class="filter-lbl">Municipality</span>
+    <select id="f-municipality"><option value="">All</option></select>
+  </div>
+  <div class="filter-group">
+    <span class="filter-lbl">Property type</span>
+    <select id="f-prop-type"><option value="">All</option></select>
+  </div>
+  <div class="filter-group">
+    <span class="filter-lbl">Document</span>
+    <select id="f-doc-type"><option value="">All</option></select>
+  </div>
+  <div class="filter-group">
+    <span class="filter-lbl">Conveyance</span>
+    <select id="f-conveyance"><option value="">All</option></select>
+  </div>
+  <div class="filter-group" id="fg-price">
+    <span class="filter-lbl">Sale price</span>
+    <input type="text" id="f-price-min" placeholder="Min $" />
+    <span style="font-size:11px;color:#aaa">–</span>
+    <input type="text" id="f-price-max" placeholder="Max $" />
+  </div>
+  <div class="filter-group" id="fg-units">
+    <span class="filter-lbl">Units</span>
+    <input type="text" id="f-units-min" placeholder="Min" />
+    <span style="font-size:11px;color:#aaa">–</span>
+    <input type="text" id="f-units-max" placeholder="Max" />
+  </div>
+  <input type="search" id="search-input" placeholder="Search address, grantor, grantee…" />
+  <div class="toggle-group" id="fg-arms-toggle">
+    <label class="toggle"><input type="checkbox" id="toggle-sales-only" /><span class="toggle-slider"></span></label>
+    <span class="toggle-label">Arm's-length sales only</span>
+  </div>
+  <button id="reset-btn">↺ Reset</button>
+  <span id="result-count"></span>
+</div>
+
+<div id="main">
+  <div id="map"></div>
+  <div id="sidebar">
+    <div id="sidebar-tabs">
+      <div class="stab active" data-tab="list">Transfers</div>
+      <div class="stab" data-tab="stats" id="tab-breakdown">Breakdown</div>
+    </div>
+    <div id="sidebar-content">
+      <div id="list-tab-content"></div>
+      <div id="stats-tab-content" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<div id="legend">
+  <h4>Property type</h4>
+  <div id="legend-items"></div>
+  <div class="leg-size-note">Pin size reflects sale price</div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  COLOR SCHEME BY PROPERTY TYPE
+// ═══════════════════════════════════════════════════════════════
+const PROP_COLORS = {
+  "Commercial":              { pin: "#185FA5", bg: "#E6F1FB", text: "#0C447C" },
+  "Industrial":              { pin: "#0F6E56", bg: "#E1F5EE", text: "#085041" },
+  "Agricultural":            { pin: "#639922", bg: "#EAF3DE", text: "#27500A" },
+  "Vacant land":             { pin: "#854F0B", bg: "#FAEEDA", text: "#633806" },
+  "Multi-family":            { pin: "#993556", bg: "#FBEAF0", text: "#72243E" },
+  "Single family (Class 1)": { pin: "#534AB7", bg: "#EEEDFE", text: "#3C3489" },
+  "Mixed use":               { pin: "#993C1D", bg: "#FAECE7", text: "#712B13" },
+  "Other":                   { pin: "#5F5E5A", bg: "#F1EFE8", text: "#444441" },
+};
+function propColor(type) {
+  for (const key of Object.keys(PROP_COLORS)) {
+    if (type && type.toLowerCase().includes(key.toLowerCase())) return PROP_COLORS[key];
+  }
+  return PROP_COLORS["Other"];
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  ARM'S-LENGTH DETECTION
+//  A transfer is arm's-length when conveyance = "Sale" AND
+//  no fee exemption code is present.
+// ═══════════════════════════════════════════════════════════════
+function isArmsLength(r) {
+  return r.conveyanceType === 'Sale' && !r.feeExemption;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  FORMATTING HELPERS
+// ═══════════════════════════════════════════════════════════════
+function parseDollar(s) {
+  if (!s) return 0;
+  const n = parseFloat(String(s).replace(/[$,]/g,''));
+  return isNaN(n) ? 0 : n;
+}
+function fmtDollar(n) {
+  if (!n) return '—';
+  if (n >= 1e6) return '$' + (n/1e6).toFixed(2) + 'M';
+  return '$' + Math.round(n).toLocaleString();
+}
+function fmtDollarShort(n) {
+  if (!n) return '—';
+  if (n >= 1e9) return '$' + (n/1e9).toFixed(1) + 'B';
+  if (n >= 1e6) return '$' + (n/1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return '$' + (n/1e3).toFixed(0) + 'K';
+  return '$' + n;
+}
+function cleanName(s) {
+  if (!s) return '—';
+  return s.replace(/, ?A WISCONSIN (LIMITED LIABILITY COMPANY|CORPORATION|LLC)/gi, '')
+           .replace(/, ?LLC/gi, ' LLC').replace(/\s+/g, ' ').trim();
+}
+function extractYear(d) { return d ? d.slice(-4) : ''; }
+
+// ═══════════════════════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════════════════════
+let allRecords = [], filtered = [], markers = [], map, infoWindow;
+let activeId = null, activeTab = 'list';
+let geocodingActive = false;
+
+// ═══════════════════════════════════════════════════════════════
+//  CSV PARSER (handles quoted fields with commas)
+// ═══════════════════════════════════════════════════════════════
+function parseCSV(text) {
+  const splitLine = (line) => {
+    const r = []; let c = '', q = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { q = !q; }
+      else if (ch === ',' && !q) { r.push(c.trim()); c = ''; }
+      else { c += ch; }
+    }
+    r.push(c.trim()); return r;
+  };
+  const rows = text.split('\n');
+  const headers = splitLine(rows[0]);
+  return rows.slice(1).filter(l => l.trim()).map(line => {
+    const vals = splitLine(line);
+    const obj = {};
+    headers.forEach((h, i) => { obj[h.trim()] = (vals[i] || '').trim(); });
+    return obj;
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  ROW → RECORD (normalise raw CSV row into a clean object)
+// ═══════════════════════════════════════════════════════════════
+function rowToRecord(r, idx) {
+  const munClean = (r['Municipality'] || '')
+    .replace(/, City of|, Village of|, Town of/g, '').trim();
+
+  // Deduplicate key: document number preferred; fall back to address+date
+  const dedupKey = r['Document Number']
+    ? r['Document Number'].trim()
+    : `${(r['Physical Address']||'').trim()}|${(r['Recorded Date']||'').trim()}`;
+
+  return {
+    id:               idx,
+    dedupKey,
+    docNumber:        r['Document Number'] || '',
+    recordedDate:     r['Recorded Date'] || '',
+    conveyanceDate:   r['Conveyance Date'] || '',
+    recordedYear:     extractYear(r['Recorded Date']),
+    docType:          r['Document Type'] || '',
+    docExplain:       r['Document Explain'] || '',
+    conveyanceType:   r['Conveyance Type'] || '',
+    conveyanceExplain: r['Conveyance Explain'] || '',
+    municipality:     r['Municipality'] || '',
+    munClean,
+    parcelNumber:     (r['Parcel Number'] || '').trim(),
+    propType:         r['Property Type'] || '',
+    propUseType:      r['Property Use Type'] || '',
+    propSubType:      r['Property Use Sub Type'] || '',
+    numUnits:         parseInt(r['Number of Units'] || '0') || 0,
+    propExplain:      r['Property Explain'] || '',
+    address:          r['Physical Address'] || '',
+    acres:            parseFloat(r['Acres'] || '0') || 0,
+    sqft:             parseInt(r['Square Feet'] || '0') || 0,
+    waterFront:       parseInt(r['Feet of Water Frontage'] || '0') || 0,
+    grantorName:      cleanName(r['Grantor Name']),
+    grantorType:      r['Grantor Type'] || '',
+    granteeType:      r['Grantee Type'] || '',
+    granteeName:      cleanName(r['Grantee Name']),
+    feeExemption:     r['Fee Exemption'] || '',
+    estimatedValue:   parseDollar(r['Estimated Value']),
+    salePrice:        parseDollar(r['Sale Price']),
+    transferFee:      parseDollar(r['Transfer Fee Due']),
+    financing: [
+      r['Financing - Conventional']==='Yes'      ? 'Conventional' : '',
+      r['Financing - Government']==='Yes'         ? 'Government'   : '',
+      r['Financing - Assumed Existing']==='Yes'   ? 'Assumed'      : '',
+      r['Financing - From Seller']==='Yes'        ? 'Seller'       : '',
+      r['Financing - Third Party']==='Yes'        ? 'Third party'  : '',
+    ].filter(Boolean).join(', '),
+    primaryRes:       r['Primary Residence of Grantee?'] || '',
+    prevDocNumber:    r['Previous Document Number'] || '',
+    legalDesc:        r['Legal Description'] || '',
+    lat: parseFloat(r['Latitude']  || r['Lat'] || '') || NaN,
+    lng: parseFloat(r['Longitude'] || r['Lng'] || '') || NaN,
+    _geocoded: false,
+    _marker: null,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  DATA FETCH + DEDUP
+// ═══════════════════════════════════════════════════════════════
+async function fetchRecords() {
+  try {
+    setLoading('Loading transfer records…');
+    const res = await fetch(SHEET_CSV_URL);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    const rows = parseCSV(text);
+
+    // Deduplicate by document number — handles overlapping monthly exports
+    const seen = new Set();
+    const unique = [];
+    rows.forEach((r, i) => {
+      const rec = rowToRecord(r, i);
+      if (!rec.address) return;
+      if (seen.has(rec.dedupKey)) return; // drop duplicate
+      seen.add(rec.dedupKey);
+      unique.push(rec);
+    });
+
+    // Apply data window if tier restricts history
+    if (FEATURES.dataWindowMonths > 0) {
+      const cutoff = new Date();
+      cutoff.setMonth(cutoff.getMonth() - FEATURES.dataWindowMonths);
+      return unique.filter(r => {
+        const d = new Date(r.recordedDate);
+        return isNaN(d) || d >= cutoff;
+      });
+    }
+    return unique;
+  } catch(e) {
+    showError('Could not load data. Ensure the Google Sheet is published as CSV. (' + e.message + ')');
+    return [];
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  GEOCODING (progressive, rate-limited)
+// ═══════════════════════════════════════════════════════════════
+async function geocodeOne(rec) {
+  const hasMun = rec.address.toLowerCase().includes(rec.munClean.toLowerCase());
+  const query  = hasMun ? rec.address + ', WI' : rec.address + ', ' + rec.munClean + ', WI';
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${GOOGLE_MAPS_API_KEY}&bounds=43.4,-91.8|44.2,-90.8`;
+  try {
+    const res  = await fetch(url);
+    const data = await res.json();
+    if (data.results && data.results[0]) {
+      rec.lat = data.results[0].geometry.location.lat;
+      rec.lng = data.results[0].geometry.location.lng;
+    }
+  } catch(e) {}
+  rec._geocoded = true;
+}
+
+async function runGeocodeQueue() {
+  if (geocodingActive) return;
+  geocodingActive = true;
+  const BATCH = 8;
+  const needsGeo = allRecords.filter(r => !r._geocoded && r.address && (isNaN(r.lat) || !r.lat));
+  for (let i = 0; i < needsGeo.length; i += BATCH) {
+    await Promise.all(needsGeo.slice(i, i + BATCH).map(geocodeOne));
+    if (i % (BATCH * 4) === 0) {
+      setLoading(`Geocoding… (${Math.min(i+BATCH, needsGeo.length)} of ${needsGeo.length})`);
+      applyFilters();
+    }
+    await new Promise(r => setTimeout(r, 80));
+  }
+  geocodingActive = false;
+  document.getElementById('loading-overlay').classList.add('hidden');
+  applyFilters();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  APPLY TIER UI — show/hide/lock elements based on FEATURES
+// ═══════════════════════════════════════════════════════════════
+function applyTierUI() {
+  // Tier badge in header
+  const badge = document.getElementById('tier-badge');
+  badge.textContent = CURRENT_TIER === 'free' ? 'Free' : CURRENT_TIER.charAt(0).toUpperCase() + CURRENT_TIER.slice(1);
+  badge.style.display = FEATURES.showUpgradePrompts ? 'inline-block' : 'none';
+
+  // Export button
+  const exportBtn = document.getElementById('export-btn');
+  if (!FEATURES.showExportBtn) {
+    exportBtn.disabled = true;
+    exportBtn.title = 'Export available on Professional plan';
+  }
+
+  // Price filter
+  if (!FEATURES.showPriceFilter) {
+    document.getElementById('fg-price').classList.add('filter-locked');
+    document.getElementById('fg-price').innerHTML += '<span class="lock-icon">🔒</span>';
+  }
+
+  // Units filter
+  if (!FEATURES.showUnitsFilter) {
+    document.getElementById('fg-units').classList.add('filter-locked');
+    document.getElementById('fg-units').innerHTML += '<span class="lock-icon">🔒</span>';
+  }
+
+  // Arms-length toggle
+  if (!FEATURES.showArmsLengthToggle) {
+    document.getElementById('fg-arms-toggle').style.display = 'none';
+  }
+
+  // Breakdown tab
+  const breakdownTab = document.getElementById('tab-breakdown');
+  if (!FEATURES.showBreakdownTab) {
+    breakdownTab.classList.add('locked-tab');
+    breakdownTab.innerHTML += '<span class="tab-lock">🔒</span>';
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  POPULATE FILTER DROPDOWNS
+// ═══════════════════════════════════════════════════════════════
+function populateFilters() {
+  const unique = (key) => [...new Set(allRecords.map(r => r[key]).filter(Boolean))].sort();
+  fillSelect('f-municipality', unique('munClean'));
+  fillSelect('f-prop-type',   unique('propUseType'));
+  fillSelect('f-doc-type',    unique('docType'));
+  fillSelect('f-conveyance',  unique('conveyanceType'));
+
+  const leg = document.getElementById('legend-items');
+  leg.innerHTML = '';
+  unique('propUseType').forEach(t => {
+    const c = propColor(t);
+    leg.innerHTML += `<div class="leg-item"><div class="leg-dot" style="background:${c.pin}"></div>${t}</div>`;
+  });
+}
+function fillSelect(id, vals) {
+  const el = document.getElementById(id);
+  vals.forEach(v => { const o = document.createElement('option'); o.value = v; o.text = v; el.appendChild(o); });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  FILTERS
+// ═══════════════════════════════════════════════════════════════
+function getFilters() {
+  return {
+    yearFrom:   document.getElementById('f-year-from').value.trim(),
+    yearTo:     document.getElementById('f-year-to').value.trim(),
+    mun:        document.getElementById('f-municipality').value,
+    propType:   document.getElementById('f-prop-type').value,
+    docType:    document.getElementById('f-doc-type').value,
+    conveyance: document.getElementById('f-conveyance').value,
+    priceMin:   FEATURES.showPriceFilter ? parseDollar(document.getElementById('f-price-min').value) : 0,
+    priceMax:   FEATURES.showPriceFilter ? parseDollar(document.getElementById('f-price-max').value) : 0,
+    unitsMin:   FEATURES.showUnitsFilter ? (parseInt(document.getElementById('f-units-min').value)||0) : 0,
+    unitsMax:   FEATURES.showUnitsFilter ? (parseInt(document.getElementById('f-units-max').value)||0) : 0,
+    search:     document.getElementById('search-input').value.toLowerCase().trim(),
+    salesOnly:  FEATURES.showArmsLengthToggle && document.getElementById('toggle-sales-only').checked,
+  };
+}
+
+function applyFilters() {
+  const f = getFilters();
+  filtered = allRecords.filter(r => {
+    if (f.yearFrom  && r.recordedYear < f.yearFrom)                    return false;
+    if (f.yearTo    && r.recordedYear > f.yearTo)                      return false;
+    if (f.mun       && r.munClean !== f.mun)                           return false;
+    if (f.propType  && r.propUseType !== f.propType)                   return false;
+    if (f.docType   && r.docType !== f.docType)                        return false;
+    if (f.conveyance && r.conveyanceType !== f.conveyance)             return false;
+    if (f.priceMin  && r.salePrice < f.priceMin)                       return false;
+    if (f.priceMax  && f.priceMax > 0 && r.salePrice > f.priceMax)    return false;
+    if (f.unitsMin  && r.numUnits < f.unitsMin)                        return false;
+    if (f.unitsMax  && f.unitsMax > 0 && r.numUnits > f.unitsMax)     return false;
+    if (f.salesOnly && !isArmsLength(r))                               return false;
+    if (f.search    && !`${r.address} ${r.grantorName} ${r.granteeName} ${r.municipality} ${r.parcelNumber}`.toLowerCase().includes(f.search)) return false;
+    return true;
+  });
+
+  trackEvent('filter_applied', {
+    tier: CURRENT_TIER,
+    result_count: filtered.length,
+    sales_only: f.salesOnly,
+    has_search: !!f.search,
+  });
+
+  updateMap();
+  updateSidebar();
+  updateStats();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  MAP MARKERS
+// ═══════════════════════════════════════════════════════════════
+function pinScale(price) {
+  if (!price)        return 7;
+  if (price >= 2e6)  return 14;
+  if (price >= 1e6)  return 11;
+  if (price >= 5e5)  return 9;
+  return 7;
+}
+
+function updateMap() {
+  markers.forEach(m => m.setMap(null));
+  markers = [];
+  const filteredIds = new Set(filtered.map(r => r.id));
+
+  allRecords.forEach(rec => {
+    if (!rec.lat || !rec.lng || isNaN(rec.lat)) return;
+    const visible = filteredIds.has(rec.id);
+    const c = propColor(rec.propUseType);
+    const al = isArmsLength(rec);
+
+    const marker = new google.maps.Marker({
+      position: { lat: rec.lat, lng: rec.lng },
+      map: visible ? map : null,
+      title: rec.address,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        fillColor:   c.pin,
+        fillOpacity: al ? 1 : 0.5,
+        strokeColor: '#fff',
+        strokeWeight: al ? 2 : 1,
+        scale: pinScale(rec.salePrice),
+      },
+      zIndex: al ? 10 : 5,
+    });
+
+    marker.addListener('click', () => {
+      trackEvent('popup_opened', { tier: CURRENT_TIER, address: rec.address, propType: rec.propUseType });
+      openPopup(rec, marker);
+    });
+    markers.push(marker);
+    rec._marker = marker;
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  INFO POPUP — respects FEATURES flags for gated fields
+// ═══════════════════════════════════════════════════════════════
+function openPopup(rec, marker) {
+  activeId = rec.id;
+  const c  = propColor(rec.propUseType);
+  const al = isArmsLength(rec);
+
+  const alBadge = al
+    ? `<span class="badge" style="background:#EAF3DE;color:#27500A">Arm's-length sale</span>`
+    : `<span class="badge" style="background:#F1EFE8;color:#444">Non-arm's-length</span>`;
+
+  const priceLine = rec.salePrice
+    ? `<div class="price">${fmtDollar(rec.salePrice)}</div>`
+    : (FEATURES.showEstimatedValue && rec.estimatedValue)
+      ? `<div style="font-size:12px;color:#7a8a7a">Est. value: ${fmtDollar(rec.estimatedValue)}</div>`
+      : '';
+
+  // Parcel link — gated
+  const parcelVal = FEATURES.showParcelLink && rec.parcelNumber
+    ? `<a href="${GIS_PARCEL_URL}${encodeURIComponent(rec.parcelNumber)}" target="_blank">${rec.parcelNumber} ↗</a>`
+    : rec.parcelNumber
+      ? (FEATURES.showUpgradePrompts ? `<span class="redacted">${rec.parcelNumber}</span>` : rec.parcelNumber)
+      : '—';
+
+  // Grantor / grantee — gated
+  const partyBlock = FEATURES.showGrantorGrantee
+    ? `<div class="party-block">
+        <div class="party-lbl">From (grantor)</div>
+        <div class="party-val">${rec.grantorName}</div>
+       </div>
+       <div class="party-block" style="margin-top:5px">
+        <div class="party-lbl">To (grantee)</div>
+        <div class="party-val">${rec.granteeName}</div>
+       </div>`
+    : upgradePrompt('Grantor & grantee names', 'Professional');
+
+  // Financing — gated
+  const finRow = FEATURES.showFinancing && rec.financing
+    ? `<span class="lbl">Financing</span><span class="val">${rec.financing}</span>` : '';
+
+  const unitRow   = rec.numUnits > 0   ? `<span class="lbl">Units</span><span class="val">${rec.numUnits}</span>` : '';
+  const acreRow   = rec.acres > 0      ? `<span class="lbl">Acres</span><span class="val">${rec.acres.toFixed(2)}</span>` : '';
+  const sqftRow   = rec.sqft > 0       ? `<span class="lbl">Sq ft</span><span class="val">${rec.sqft.toLocaleString()}</span>` : '';
+  const wfRow     = rec.waterFront > 0 ? `<span class="lbl">Water front</span><span class="val">${rec.waterFront} ft</span>` : '';
+  const exemptRow = rec.feeExemption   ? `<span class="lbl">Exemption</span><span class="val">${rec.feeExemption}</span>` : '';
+  const prevRow   = rec.prevDocNumber  ? `<span class="lbl">Prior doc</span><span class="val">${rec.prevDocNumber}</span>` : '';
+
+  // Upgrade prompt at bottom of popup (only when tiers are live)
+  const popupUpgrade = (!FEATURES.showGrantorGrantee && FEATURES.showUpgradePrompts)
+    ? `<div class="popup-upgrade">Grantor/grantee names and parcel links available on the <a href="/upgrade">Professional plan</a>.</div>`
+    : '';
+
+  infoWindow.setContent(`<div class="gm-popup">
+    <h3>${rec.address}</h3>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
+      <span class="badge" style="background:${c.bg};color:${c.text}">${rec.propUseType||'Unknown'}</span>
+      ${alBadge}
+    </div>
+    ${priceLine}
+    <hr class="divider"/>
+    <div class="popup-grid">
+      <span class="lbl">Municipality</span><span class="val">${rec.munClean}</span>
+      <span class="lbl">Recorded</span><span class="val">${rec.recordedDate}</span>
+      <span class="lbl">Conveyed</span><span class="val">${rec.conveyanceDate||'—'}</span>
+      <span class="lbl">Doc type</span><span class="val">${rec.docType}${rec.docExplain?' — '+rec.docExplain:''}</span>
+      <span class="lbl">Conveyance</span><span class="val">${rec.conveyanceType}${rec.conveyanceExplain?' ('+rec.conveyanceExplain+')':''}</span>
+      <span class="lbl">Parcel</span><span class="val">${parcelVal}</span>
+      ${unitRow}${acreRow}${sqftRow}${wfRow}${finRow}${exemptRow}${prevRow}
+    </div>
+    <hr class="divider"/>
+    ${partyBlock}
+    ${popupUpgrade}
+  </div>`);
+
+  infoWindow.open(map, marker);
+  highlightCard(rec.id);
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  SIDEBAR
+// ═══════════════════════════════════════════════════════════════
+function updateSidebar() {
+  if (activeTab === 'list') renderList();
+  else if (activeTab === 'stats' && FEATURES.showBreakdownTab) renderBreakdown();
+}
+
+function renderList() {
+  const el = document.getElementById('list-tab-content');
+  if (filtered.length === 0) {
+    el.innerHTML = `<div style="padding:16px;font-size:12px;color:#7a8a7a;">No records match the current filters.</div>`;
+    return;
+  }
+  const sorted = [...filtered].sort((a,b) => b.recordedDate.localeCompare(a.recordedDate));
+  el.innerHTML = sorted.map(r => {
+    const c  = propColor(r.propUseType);
+    const al = isArmsLength(r);
+    const price = r.salePrice
+      ? `<span class="t-card-price">${fmtDollar(r.salePrice)}</span>`
+      : `<span style="font-size:11px;color:#aaa">No sale price</span>`;
+    return `<div class="t-card${activeId===r.id?' active':''}" data-id="${r.id}">
+      <div class="t-card-addr">${r.address}</div>
+      <div class="t-card-sub">${r.munClean} · ${r.recordedDate}</div>
+      <div class="t-card-row">
+        ${price}
+        <span class="badge" style="background:${c.bg};color:${c.text}">${r.propUseType}</span>
+      </div>
+      ${!al ? `<div style="font-size:10px;color:#9aa89a;margin-top:3px;">${r.conveyanceType}${r.feeExemption?' · '+r.feeExemption:''}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  el.querySelectorAll('.t-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const rec = allRecords.find(r => r.id === +card.dataset.id);
+      if (rec && rec._marker && rec.lat && !isNaN(rec.lat)) {
+        map.panTo({ lat: rec.lat, lng: rec.lng });
+        map.setZoom(16);
+        openPopup(rec, rec._marker);
+        trackEvent('sidebar_card_clicked', { tier: CURRENT_TIER, address: rec.address });
+      }
+    });
+  });
+}
+
+function renderBreakdown() {
+  const el = document.getElementById('stats-tab-content');
+  if (!FEATURES.showBreakdownTab) {
+    el.innerHTML = upgradePrompt('Breakdown charts', 'Analyst') ||
+      `<div style="padding:16px;font-size:12px;color:#7a8a7a;">Upgrade to view breakdown charts.</div>`;
+    return;
+  }
+  const tally = (key) => {
+    const out = {};
+    filtered.forEach(r => { const v = r[key]||'Unknown'; out[v]=(out[v]||0)+1; });
+    return out;
+  };
+  const barRows = (obj) => {
+    const sorted = Object.entries(obj).sort((a,b)=>b[1]-a[1]).slice(0,8);
+    const max = sorted[0]?.[1]||1;
+    return sorted.map(([k,v]) =>
+      `<div class="bar-row">
+        <span class="bar-name" title="${k}">${k}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.round(v/max*100)}%"></div></div>
+        <span class="bar-val">${v}</span>
+      </div>`).join('');
+  };
+  el.innerHTML = `<div style="padding:14px">
+    <div class="mini-stat"><div class="mini-stat-label">By property type</div>${barRows(tally('propUseType'))}</div>
+    <div class="mini-stat"><div class="mini-stat-label">By municipality</div>${barRows(tally('munClean'))}</div>
+    <div class="mini-stat"><div class="mini-stat-label">By conveyance type</div>${barRows(tally('conveyanceType'))}</div>
+    <div class="mini-stat"><div class="mini-stat-label">By year recorded</div>${barRows(tally('recordedYear'))}</div>
+  </div>`;
+}
+
+function highlightCard(id) {
+  document.querySelectorAll('.t-card').forEach(el => el.classList.toggle('active', +el.dataset.id===id));
+  const active = document.querySelector(`.t-card[data-id="${id}"]`);
+  if (active) active.scrollIntoView({ behavior:'smooth', block:'nearest' });
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  STATS BAR
+// ═══════════════════════════════════════════════════════════════
+function updateStats() {
+  const sales  = filtered.filter(isArmsLength);
+  const prices = sales.map(r=>r.salePrice).filter(Boolean).sort((a,b)=>a-b);
+  const median = prices.length ? prices[Math.floor(prices.length/2)] : 0;
+  const volume = prices.reduce((s,n)=>s+n, 0);
+
+  document.getElementById('s-total').textContent   = allRecords.length.toLocaleString();
+  document.getElementById('s-showing').textContent = filtered.length.toLocaleString();
+  document.getElementById('s-sales').textContent   = sales.length.toLocaleString();
+  document.getElementById('s-volume').textContent  = fmtDollarShort(volume);
+  document.getElementById('s-median').textContent  = fmtDollar(median);
+  document.getElementById('result-count').textContent = `${filtered.length} of ${allRecords.length}`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  EXPORT CSV
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('export-btn').addEventListener('click', () => {
+  if (!FEATURES.showExportBtn) return;
+  trackEvent('export_csv', { tier: CURRENT_TIER, count: filtered.length });
+
+  const cols = ['address','munClean','recordedDate','conveyanceDate','docType','conveyanceType',
+    'propUseType','numUnits','acres','salePrice','estimatedValue',
+    ...(FEATURES.showGrantorGrantee ? ['grantorName','granteeName'] : []),
+    'feeExemption','parcelNumber'];
+  const headers = ['Address','Municipality','Recorded Date','Conveyance Date','Document Type',
+    'Conveyance Type','Property Use Type','Units','Acres','Sale Price','Estimated Value',
+    ...(FEATURES.showGrantorGrantee ? ['Grantor','Grantee'] : []),
+    'Fee Exemption','Parcel Number'];
+
+  const rows = [headers.join(',')];
+  filtered.forEach(r => {
+    rows.push(cols.map(c => {
+      const v = String(r[c]||'').replace(/"/g,'""');
+      return v.includes(',') ? `"${v}"` : v;
+    }).join(','));
+  });
+  const blob = new Blob([rows.join('\n')], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `ladco-transfers-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  SIDEBAR TAB SWITCHING
+// ═══════════════════════════════════════════════════════════════
+document.querySelectorAll('.stab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    if (tab.classList.contains('locked-tab')) {
+      if (FEATURES.showUpgradePrompts) window.location.href = '/upgrade';
+      return;
+    }
+    document.querySelectorAll('.stab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    activeTab = tab.dataset.tab;
+    document.getElementById('list-tab-content').style.display  = activeTab==='list'  ? '' : 'none';
+    document.getElementById('stats-tab-content').style.display = activeTab==='stats' ? '' : 'none';
+    if (activeTab==='stats') renderBreakdown();
+    trackEvent('tab_switched', { tier: CURRENT_TIER, tab: activeTab });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  FILTER EVENT LISTENERS
+// ═══════════════════════════════════════════════════════════════
+['f-municipality','f-prop-type','f-doc-type','f-conveyance'].forEach(id =>
+  document.getElementById(id).addEventListener('change', applyFilters));
+['f-year-from','f-year-to','f-price-min','f-price-max','f-units-min','f-units-max'].forEach(id =>
+  document.getElementById(id).addEventListener('change', applyFilters));
+document.getElementById('search-input').addEventListener('input', applyFilters);
+document.getElementById('toggle-sales-only').addEventListener('change', applyFilters);
+document.getElementById('reset-btn').addEventListener('click', () => {
+  ['f-municipality','f-prop-type','f-doc-type','f-conveyance'].forEach(id => document.getElementById(id).value='');
+  ['f-year-from','f-year-to','f-price-min','f-price-max','f-units-min','f-units-max','search-input'].forEach(id => document.getElementById(id).value='');
+  document.getElementById('toggle-sales-only').checked = false;
+  activeId = null;
+  infoWindow && infoWindow.close();
+  applyFilters();
+  trackEvent('filters_reset', { tier: CURRENT_TIER });
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  UTILITY
+// ═══════════════════════════════════════════════════════════════
+function setLoading(msg) {
+  document.getElementById('loading-msg').textContent = msg;
+  document.getElementById('loading-overlay').classList.remove('hidden');
+}
+function showError(msg) {
+  const el = document.getElementById('error-bar');
+  el.textContent = msg; el.style.display = 'block';
+  document.getElementById('loading-overlay').classList.add('hidden');
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════════════════════
+async function initMap() {
+  map = new google.maps.Map(document.getElementById('map'), {
+    center: { lat: 43.813, lng: -91.24 },
+    zoom: 12,
+    mapTypeControlOptions: {
+      style: google.maps.MapTypeControlStyle.DROPDOWN_MENU,
+      position: google.maps.ControlPosition.TOP_RIGHT,
+    },
+    streetViewControl: false,
+    fullscreenControl: true,
+  });
+  infoWindow = new google.maps.InfoWindow({ maxWidth: 320 });
+
+  applyTierUI();
+
+  const records = await fetchRecords();
+  if (!records.length) return;
+
+  allRecords = records;
+  filtered   = [...records];
+  populateFilters();
+  applyFilters();
+
+  document.getElementById('last-updated').textContent =
+    'Loaded ' + new Date().toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
+
+  trackEvent('map_loaded', { tier: CURRENT_TIER, record_count: allRecords.length });
+  runGeocodeQueue();
+}
+
+window.gm_authFailure = () => showError('Google Maps API key is invalid or not authorized.');
+</script>
+
+<script>
+  const s = document.createElement('script');
+  s.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_MAPS_API_KEY}&callback=initMap`;
+  s.async = true; s.defer = true;
+  document.head.appendChild(s);
+</script>
+</body>
+</html>
