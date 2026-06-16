@@ -593,7 +593,6 @@ async function runGeocodeQueue() {
     await new Promise(r => setTimeout(r, 80));
   }
   geocodingActive = false;
-  document.getElementById('loading-overlay').classList.add('hidden');
   applyFilters();
 }
 
@@ -1039,6 +1038,9 @@ async function initMap() {
   filtered   = [...records];
   populateFilters();
   applyFilters();
+
+  // Hide loading overlay as soon as data is rendered
+  document.getElementById('loading-overlay').classList.add('hidden');
 
   document.getElementById('last-updated').textContent =
     'Loaded ' + new Date().toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
